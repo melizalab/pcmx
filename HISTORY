@@ -1,0 +1,10 @@
+
+3/10/02
+    - Started this history file.  Pcmx has been around for many
+        years before this, though.
+    - Got rid of the Imakefiles, replaced with custom Makefile
+    - Added -help and -version command line options.
+    - Added simple versioning system.
+    - Cleaned up play_samples() to better handle errors from
+        the Linux audio output device.
+
