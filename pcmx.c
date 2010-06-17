@@ -94,13 +94,6 @@
 ***			to both the onset and offset.  Give a zero to restrict the operation.
 ***			This is useful for removing clicks caused by a sudden transition at
 ***			the onset or offset of a stimulus.
-***		- pcmx now supports playing to a soundcard, instead of creating an output
-***			file.  playing is actually treated as a pipe, so multiple -play commands
-***			can be specified on the command line, in between various processing
-***			options, and you'll be able to hear the sounds with and without the
-***			processing.  E.g.: pcmx -play -scale 96 -play zy_hv12.wav
-***			will play the sound twice, before and after amplifying it.
-***			This option implies -noout.
 ***		- The simple addition of this feature turns pcmx into one of the better
 ***			sound players out there (well, okay - not really.  There's no support for
 ***			anything but mono sounds, so stereo wav files will only have one
@@ -128,8 +121,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
-#include <sys/soundcard.h>
-#include <pcmio.h>
+#include "pcmio.h"
 #include "version.h"
 
 
@@ -177,7 +169,6 @@
 #define PROCESS_PASTEOVER 20
 #define PROCESS_LINRAMP 21
 #define PROCESS_EXPRAMP 22
-#define PROCESS_PLAY 23
 
 #define MAXENTRIES 10000
 
@@ -229,7 +220,6 @@ static void scale_samples(short *samples, int nsamples, double scaledB);
 static void rmsscale_samples(short *samples, int nsamples, double scaledB);
 static void linramp_samples(short *samples, int nsamples, int samplerate, double onramp, double offramp);
 static void expramp_samples(short *samples, int nsamples, int samplerate, double onramp, double offramp);
-static void play_samples(short *samples, int nsamples, int samplerate);
 static void agcscale_samples(short *samples, int nsamples, double scaledB, int winsamples);
 static void lpfilt_samples(short *samples, int nsamples, int freq);
 static void hpfilt_samples(short *samples, int nsamples, int freq);
@@ -294,7 +284,6 @@ static void usage(void)
 	fprintf(stdout, "                     are supported.  If %%d is part of filename, then multiple\n");
 	fprintf(stdout, "                     output files are assumed\n");
 	fprintf(stdout, "    [-entry #]     = optional, start with output file entry %%d (default == 1)\n");
-	fprintf(stdout, "    [-play]        = optional, play sound via soundcard.  Implies -noout\n");
 	fprintf(stdout, "    [-noout]       = optional, instead of outfilename; create no output file\n\n");
 	fprintf(stdout, "  For example, to extract pcm entries from a pcm_seq2 file:\n");
 	fprintf(stdout, "    pcmx zy_hv12n*.pcm_seq2 hv12n_%%03d.pcm\n");
@@ -446,11 +435,6 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[arg], "-invert"))
 		{
 			nextproc = add_proc(PROCESS_INVERT);
-		}
-		else if (!strcmp(argv[arg], "-play"))
-		{
-			nextproc = add_proc(PROCESS_PLAY);
-			nooutput = 1;
 		}
 		else if (!strcmp(argv[arg], "-reverse"))
 		{
@@ -789,8 +773,6 @@ int main(int argc, char *argv[])
 									rmsscale_samples(samples_strt, samples_cnt, nextproc->fltarg1);
 								if (nextproc->type == PROCESS_LINRAMP)
 									linramp_samples(samples_strt, samples_cnt, samplerate, nextproc->fltarg1, nextproc->fltarg2);
-								if (nextproc->type == PROCESS_PLAY)
-									play_samples(samples_strt, samples_cnt, samplerate);
 								if (nextproc->type == PROCESS_EXPRAMP)
 									expramp_samples(samples_strt, samples_cnt, samplerate, nextproc->fltarg1, nextproc->fltarg2);
 								if (nextproc->type == PROCESS_LOPASS)
@@ -1460,63 +1442,6 @@ static void expramp_samples(short *samples, int nsamples, int samplerate, double
 
 }
 
-static void play_samples(short *samples, int nsamples, int samplerate)
-{
-	int channels, fmt, rate, volume, left, right, arg;
-	int fd;
-	audio_buf_info info;
-
-	if ((fd = open("/dev/dsp", O_WRONLY)) == -1)
-	{
-		fprintf(stderr, "Error opening /dev/dsp: %s\n", strerror(errno));
-		exit(-1);
-	}
-
-	fmt = AFMT_S16_LE;
-	if (ioctl(fd, SNDCTL_DSP_SETFMT, &fmt) == -1)
-	{
-		fprintf(stderr, "Error setting /dev/dsp to 16-bit little-endian mode: %s\n", strerror(errno));
-		close(fd);
-		exit(-1);
-	}
-
-	channels = 1;
-	if (ioctl(fd, SNDCTL_DSP_CHANNELS, &channels) == -1)
-	{
-		fprintf(stderr, "Error setting /dev/dsp to %d channels: %s\n", channels, strerror(errno));
-		close(fd);
-		exit(-1);
-	}
-
-	rate = samplerate;
-	if (ioctl(fd, SNDCTL_DSP_SPEED, &rate) == -1)
-	{
-		fprintf(stderr, "Error setting /dev/dsp to rate %d: %s\n", samplerate, strerror(errno));
-		close(fd);
-		exit(-1);
-	}
-	if (rate != samplerate)
-	{
-		fprintf(stderr, "Asked for rate %d, got %d\n", samplerate, rate);
-	}
-
-	left = right = 50;
-	volume = (left | (right << 8));
-	if (ioctl(fd, SOUND_MIXER_WRITE_OGAIN, &volume) == -1)
-	{
-		fprintf(stderr, "Unable to set /dev/dsp volume: %s\nContinuing.\n", strerror(errno));
-	}
-
-	arg = 0x0002000B;  /* 0xMMMMSSSS; where MMMM is # of fragments, SSSS is log2(size) of each fragment */
-	if (ioctl(fd, SNDCTL_DSP_SETFRAGMENT, &arg) == -1)
-	{
-		fprintf(stderr, "Unable to set /dev/dsp buffering params: %s\nContinuing.\n", strerror(errno));
-	}
-	ioctl(fd, SNDCTL_DSP_GETOSPACE, &info);
-
-	write(fd, samples, nsamples * sizeof(short));
-	close(fd);
-}
 
 static void agcscale_samples(short *samples, int nsamples, double scaledB, int winsamples)
 {
@@ -1604,13 +1529,20 @@ static void lpfilt_samples(short *samples, int nsamples, int freq)
 
 static void hpfilt_samples(short *samples, int nsamples, int freq)
 {
-	int i;
+	int i,j,k;
 	double tg, rs, dh[3][3], err, y;
 
 	/*
 	** Initialize the filter coefficients
 	*/
 	hpcoef(freq / 20000.0, &tg);
+
+	for (j = 1; j < 6; j++) {
+	  for (k = 1; k < 3; k++) {
+	    fprintf(stdout, "%3.4f ", c2[j][k]);
+	  }
+	}
+	fprintf(stdout, "\n");
 
 	/*
 	** Initialize the low and hi-pass delay groups
